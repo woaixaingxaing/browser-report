@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Chrome 浏览报告生成器 —— 周报 / 月报 / 年度总结，单文件 HTML，离线可视化。
+Chrome 浏览报告生成器 —— 日报 / 周报 / 月报 / 年度总结，单文件 HTML，离线可视化。
 
 数据源：
   - Chrome History SQLite（visits.visit_time / visit_duration，精确到微秒）
@@ -9,7 +9,7 @@ Chrome 浏览报告生成器 —— 周报 / 月报 / 年度总结，单文件 H
 不依赖扩展、不联网、不修改原库（先快照再读）。
 
 用法：
-  python gen_report.py                      # 本周 + 本月 + 今年
+  python gen_report.py                      # 日报 + 本周 + 本月 + 今年
   python gen_report.py --anchor 2026-10-24  # 以某天为基准
   python gen_report.py --year 2026
   python gen_report.py --out dist/报告.html --profile Default
@@ -25,8 +25,10 @@ import shutil
 import sqlite3
 import sys
 import tempfile
+import webbrowser
 from collections import Counter, defaultdict
 from html import escape
+from pathlib import Path
 from urllib.parse import urlparse
 
 CHROME_EPOCH = dt.datetime(1601, 1, 1, tzinfo=dt.timezone.utc)
@@ -37,6 +39,21 @@ WEEKDAYS = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"
 MAX_VISIT_SECONDS = 15 * 60
 SESSION_GAP_SECONDS = 20 * 60
 SAME_URL_WINDOW = 30 * 60
+
+
+def default_user_data() -> str:
+    """当前系统上 Chrome 的用户数据目录。"""
+    if sys.platform == "win32":
+        base = os.environ.get("LOCALAPPDATA") or os.path.expanduser(r"~\AppData\Local")
+        return os.path.join(base, "Google", "Chrome", "User Data")
+    if sys.platform == "darwin":
+        return os.path.expanduser("~/Library/Application Support/Google/Chrome")
+    for candidate in ("~/.config/google-chrome", "~/.config/chromium"):
+        path = os.path.expanduser(candidate)
+        if os.path.isdir(path):
+            return path
+    return os.path.expanduser("~/.config/google-chrome")
+
 
 CATEGORIES = [
     ("搜索", "#0071e3", ("google.", "bing.com", "baidu.com", "duckduckgo.com", "so.com", "sogou.com")),
@@ -1591,9 +1608,9 @@ def build_html(periods, generated_at, source_note, pages, hist) -> str:
 def main():
     here = os.path.dirname(os.path.abspath(__file__))
     ap = argparse.ArgumentParser()
-    ap.add_argument("--profile", default="Default")
-    ap.add_argument("--user-data", default=os.path.join(
-        os.environ.get("LOCALAPPDATA", ""), "Google", "Chrome", "User Data"))
+    ap.add_argument("--profile", default="Default", help="Chrome 配置文件目录名，如 Default、Profile 1")
+    ap.add_argument("--user-data", default=default_user_data(),
+                    help="Chrome User Data 目录；默认按当前系统自动选择")
     ap.add_argument("--anchor", default=None, help="基准日期 YYYY-MM-DD，默认今天")
     ap.add_argument("--year", type=int, default=None)
     ap.add_argument("--out", default=os.path.join(here, "dist", "browser-report.html"))
@@ -1658,7 +1675,7 @@ def main():
     print(f"{month['label']} {month['totals']['visits']:,} 次 · {human_seconds(month['totals']['seconds'])}")
     print(f"{year} 年度 {annual['totals']['visits']:,} 次 · {human_seconds(annual['totals']['seconds'])}")
     if args.open:
-        os.startfile(args.out)  # noqa: S606  (Windows 专用)
+        webbrowser.open(Path(args.out).resolve().as_uri())
 
 
 if __name__ == "__main__":

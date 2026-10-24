@@ -3,9 +3,28 @@
 把 Chrome 的历史记录和书签，生成一份离线单文件 HTML 报告。历史浏览仿 Better History：
 左边月历、右边时间线，按天翻、按关键词搜、按分类和站点筛；另外提供日报、周报、月报和年报。
 
-## 直接看
+代码公开，数据不出本机：脚本只读取当前电脑上的 Chrome 数据，生成过程不联网，也不会上传任何浏览记录。
 
-`dist/browser-report.html`（双击即可，不需要联网、不需要装依赖）
+## 快速开始
+
+需要 Python 3.10+，只用标准库，不用装依赖。
+
+```bash
+git clone https://github.com/woaixaingxaing/browser-report.git
+cd browser-report
+python gen_report.py --open
+```
+
+生成的报告在 `dist/browser-report.html`，双击就能离线看。也可以直接打开：
+
+```bash
+python gen_report.py                 # 日报 + 本周 + 本月 + 今年
+python gen_report.py --open          # 生成后自动打开
+python gen_report.py --year 2026     # 指定年度
+python gen_report.py --anchor 2026-10-24   # 以某天为基准
+```
+
+Windows 上如果 `python` 不在 PATH，可以试 `py -3 gen_report.py`。
 
 ## 能做什么
 
@@ -32,24 +51,28 @@
 - 所有页面标题和排行条目都可点击，直达原网页。
 - 年度活跃日历是 GitHub 贡献图样式，悬停看当天明细；图例同样使用固定的 1–49 / 50–149 / 150–399 / 400+ 次/天。
 
-## 重新生成
-
-```powershell
-python gen_report.py                 # 本周 + 本月 + 今年
-python gen_report.py --open          # 生成后自动打开
-python gen_report.py --year 2026     # 指定年度
-python gen_report.py --anchor 2026-10-24   # 以某天为基准
-```
-
-输出默认写到 `dist/browser-report.html`。
-
 ## 数据从哪来
 
 | 数据 | 来源 | 精度 |
 |---|---|---|
-| 访问记录 | `%LOCALAPPDATA%\Google\Chrome\User Data\Default\History`（SQLite） | 微秒，展示到秒 |
+| 访问记录 | Chrome `User Data/<Profile>/History`（SQLite） | 微秒，展示到秒 |
 | 停留时长 | `visits.visit_duration` | 微秒 |
 | 书签 | `Bookmarks`（JSON，`date_added`） | 微秒 |
+
+默认数据目录：
+
+| 系统 | 路径 |
+|---|---|
+| Windows | `%LOCALAPPDATA%\Google\Chrome\User Data` |
+| macOS | `~/Library/Application Support/Google/Chrome` |
+| Linux | `~/.config/google-chrome`（找不到时退回 `~/.config/chromium`） |
+
+默认读 `Default` 配置；多用户或工作资料可以指定，例如：
+
+```bash
+python gen_report.py --profile "Profile 1"
+python gen_report.py --user-data "D:/ChromeUserData"
+```
 
 脚本先把数据库**快照**到临时目录再读，不碰原库、不需要关 Chrome。
 
@@ -62,16 +85,39 @@ python gen_report.py --anchor 2026-10-24   # 以某天为基准
 
 ## 一个绕不开的限制
 
-Chrome 默认只保留约 **90 天**历史，所以「2026 年度」实际只覆盖 7 月底至今。
+Chrome 默认只保留约 **90 天**历史，所以「年度」视图实际只覆盖 Chrome 留存的这段时间。
 报告顶部的「历史覆盖」和年度视图里的灰色格子都在说明这件事。
 想要完整的年度数据，得靠定期归档（比如每周跑一次，把 HTML 或导出的 JSON 存下来）。
+
+## 自动刷新（可选）
+
+`auto_report.py` 是给定时或事件触发用的包装器：
+
+```bash
+python auto_report.py --trigger event --quiet
+```
+
+它运行 `gen_report.py`，把每次结果追加到 `logs/auto-refresh.log`，
+记录时间、触发来源、成功/失败、耗时、文件大小和本期汇总。
+日志超过 1 MB 自动轮转，保留 3 份备份；`logs/` 已在 `.gitignore` 里，不会提交。
+
+配合 Quicker 的「设备闲置超过 300 秒」事件触发，就能在电脑空下来时自动记一次：
+
+- 新建一个 C# 脚本动作，调用 `python -X utf8 auto_report.py --trigger event --quiet`；
+- 动作需要能写入项目目录，超时上限建议不低于 150 秒；
+- 事件参数：空闲时长 `300` 秒，重复间隔 `0`，最大重复次数 `1`；
+- 事件触发时不要打开报告、不要弹通知，结果只进本地日志。
+
+手动运行时去掉 `--quiet`，就能看到生成器的汇总输出。
 
 ## 文件
 
 ```
 gen_report.py            生成器（Python 3.10+，只用标准库）
+auto_report.py           自动刷新包装器 + 本地日志
 report.css               报告样式（生成时内联进 HTML）
 dist/browser-report.html 生成结果（单文件、离线可看，不入库）
+logs/                    自动刷新日志（本地，不入库）
 ```
 
 样式改动只需改 `report.css`，重新跑一次生成器即可。
@@ -79,25 +125,10 @@ dist/browser-report.html 生成结果（单文件、离线可看，不入库）
 ## 隐私
 
 报告包含完整的个人浏览记录，仓库里**只放生成器代码**，不包含 `dist/` 下的成品、
-Chrome 原始 `History` 数据库或 `Bookmarks`。想分享报告前，请先确认内容可以公开。
+`logs/` 日志、Chrome 原始 `History` 数据库或 `Bookmarks`。
+每个人运行后读到的都是自己电脑上的数据；想分享报告前，请先确认内容可以公开。
 
 ## 版本
 
-- 当前 `v1.1`，变更见 [CHANGELOG.md](CHANGELOG.md)。
+- 当前 `v1.2`，变更见 [CHANGELOG.md](CHANGELOG.md)。
 - 版本用 Git tag 与 GitHub Release 标记，升级时递增次版本号。
-
-## Quicker 动作
-
-动作名 **浏览报告**（`297264f5-01df-43c2-bb2e-5b7e7b7011b6`），一键生成并打开报告。
-
-- 脚本先找 Python：优先 `py -3`，没有就退回 `python`；两个都找不到会提示装 Python。
-- 用 `-X utf8` 调用，保证中文输出不乱码；生成器超时上限 150 秒，动作整体上限 180 秒。
-- 成功后直接打开 `dist/browser-report.html`，并弹一条通知，内容是本期三行汇总：
-
-  ```
-  本周 3,035 次 · 1 天 14 小时
-  10 月 4,130 次 · 2 天 7 小时
-  2026 年度 10,554 次 · 4 天 16 小时
-  ```
-
-- 动作里只有一个参数「项目目录」，默认就是本文件夹；项目搬家后改这一处即可。

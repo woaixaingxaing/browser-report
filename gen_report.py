@@ -143,6 +143,20 @@ def category_of(domain: str, url: str) -> str:
 CAT_COLOR = {name: color for name, color, _ in CATEGORIES}
 CAT_COLOR.setdefault("其他", "#c7c7cc")
 
+# 热力档位用固定访问量边界，月历和年度日历共用，颜色不会随当月最大值漂移。
+# (下限, 上限)，最后一档上限为 None 表示 400 次以上。
+HEAT_STEPS = ((1, 49), (50, 149), (150, 399), (400, None))
+HEAT_LEGEND = "1–49 · 50–149 · 150–399 · 400+ 次/天"
+
+
+def heat_level(n: int) -> int:
+    if n <= 0:
+        return 0
+    for level, (_, hi) in enumerate(HEAT_STEPS, 1):
+        if hi is None or n <= hi:
+            return level
+    return 4
+
 
 def clean_title(title: str | None, url: str) -> str:
     t = " ".join((title or "").split())
@@ -463,6 +477,9 @@ def build_period(key, label, start, end, visits, bookmarks, prev_start, prev_end
         longest_page = max(rows, key=lambda v: v["eff"])
     night = sum(1 for v in rows if v["t"].hour < 6)
     top_cat = next((c[0] for c in cats if c[0] != "其他"), "—")
+    first_visit = min((v["t"] for v in rows), default=None)
+    last_visit = max((v["t"] for v in rows), default=None)
+    peak_hour = max(range(24), key=lambda h: hours[h]) if rows else None
 
     return {
         "key": key, "label": label, "start": start, "end": end, "now": now,
@@ -473,6 +490,7 @@ def build_period(key, label, start, end, visits, bookmarks, prev_start, prev_end
         "bm_total": len(bookmarks), "calendar": calendar,
         "busiest": busiest, "longest_session": longest_session, "longest_page": longest_page,
         "night": night, "top_cat": top_cat,
+        "first_visit": first_visit, "last_visit": last_visit, "peak_hour": peak_hour,
         "rows": rows,
     }
 
@@ -483,15 +501,32 @@ def render_kpis(p) -> str:
     t, pr = p["totals"], p["prev"]
     avg_day = t["seconds"] / t["days"] if t["days"] else 0
     per_day = t["visits"] / t["days"] if t["days"] else 0
-    cards = [
-        ("访问页面", f'{t["visits"]:,}', f'独立页面 {t["pages"]:,}', pct(t["visits"], pr["visits"])),
-        ("有效阅读", human_seconds(t["seconds"]), f'日均 {human_seconds(avg_day)}', pct(t["seconds"], pr["seconds"])),
-        ("活跃天数", f'{t["days"]}', f'数据覆盖 {p["coverage"]} 天', ""),
-        ("站点数", f'{t["domains"]:,}', f'日均 {per_day:.0f} 次访问', pct(t["domains"], pr["domains"])),
-    ]
+    is_day = p["key"] == "day"
+    if is_day:
+        longest = max((s["sec"] for s in p["sessions"]), default=0)
+        peak = p["peak_hour"]
+        peak_n = p["hours"][peak] if peak is not None else 0
+        cards = [
+            ("访问页面", f'{t["visits"]:,}', f'独立页面 {t["pages"]:,}', pct(t["visits"], pr["visits"])),
+            ("有效阅读", human_seconds(t["seconds"]),
+             f'最长单页 {human_seconds(p["longest_page"]["eff"]) if p["longest_page"] else "—"}',
+             pct(t["seconds"], pr["seconds"])),
+            ("站点数", f'{t["domains"]:,}',
+             f'最忙 {peak:02d}:00 · {peak_n} 次' if peak is not None else "当天无访问",
+             pct(t["domains"], pr["domains"])),
+            ("连续浏览", f'{len(p["sessions"])}', f'最长 {human_seconds(longest)}', ""),
+        ]
+    else:
+        cards = [
+            ("访问页面", f'{t["visits"]:,}', f'独立页面 {t["pages"]:,}', pct(t["visits"], pr["visits"])),
+            ("有效阅读", human_seconds(t["seconds"]), f'日均 {human_seconds(avg_day)}', pct(t["seconds"], pr["seconds"])),
+            ("活跃天数", f'{t["days"]}', f'数据覆盖 {p["coverage"]} 天', ""),
+            ("站点数", f'{t["domains"]:,}', f'日均 {per_day:.0f} 次访问', pct(t["domains"], pr["domains"])),
+        ]
+    tail_label = "较前一日" if is_day else "较上期"
     html = ['<div class="kpis">']
     for name, val, sub, delta in cards:
-        tail = f' · 较上期 {delta}' if delta and delta != "—" else ""
+        tail = f' · {tail_label} {delta}' if delta and delta != "—" else ""
         html.append(
             f'<div class="kpi"><div class="kpi-name">{name}</div>'
             f'<div class="kpi-val">{val}</div>'
@@ -675,12 +710,46 @@ def render_day_details(p) -> str:
     return f'<div class="days">{"".join(items)}</div>'
 
 
+def render_visit_list(p) -> str:
+    """日报用：按小时折叠的完整访问列表，最近一小时默认展开。"""
+    rows = sorted(p["rows"], key=lambda v: v["t"])
+    if not rows:
+        return '<p class="empty">这一天没有浏览记录</p>'
+    by_hour = defaultdict(list)
+    for v in rows:
+        by_hour[v["t"].hour].append(v)
+    hours = sorted(by_hour)
+    groups = []
+    for hour in hours:
+        items = by_hour[hour]
+        secs = sum(v["eff"] for v in items)
+        body = []
+        for v in items:
+            color = CAT_COLOR.get(v["cat"], "#94a3b8")
+            body.append(
+                f'<tr><td class="mono">{v["t"]:%H:%M:%S}</td>'
+                f'<td><span class="dot" style="background:{color}"></span>'
+                f'{page_link(v["url"], v["title"], "page-link subtle")}'
+                f'<div class="meta">{escape(v["domain"])}</div></td>'
+                f'<td class="num">{escape(v["cat"])}</td>'
+                f'<td class="num">{human_short(v["eff"])}</td></tr>'
+            )
+        groups.append(
+            '<details class="day">'
+            f'<summary><b>{hour:02d}:00–{hour:02d}:59</b>'
+            f'<span class="sum">{len(items)} 次 · {human_short(secs)}</span></summary>'
+            '<table class="tbl tight visit-list"><thead><tr><th>时间</th><th>页面</th>'
+            f'<th class="num">类型</th><th class="num">停留</th></tr></thead><tbody>{"".join(body)}</tbody></table>'
+            '</details>'
+        )
+    return f'<div class="days">{"".join(groups)}</div>'
+
+
 def render_calendar(p) -> str:
     cal = p["calendar"]
     if not cal:
         return ""
     counts = {d: n for d, n in cal}
-    mx = max(counts.values()) or 1
     first = min(counts)
     last = max(counts)
     start = first - dt.timedelta(days=first.weekday())
@@ -694,7 +763,7 @@ def render_calendar(p) -> str:
             cells.append('<i class="cell out"></i>')
         else:
             n = counts.get(d, 0)
-            lvl = 0 if n == 0 else min(4, 1 + int((n - 1) / mx * 4))
+            lvl = heat_level(n)
             secs = sum(x["eff"] for x in p["day_map"].get(d, []))
             cells.append(
                 f'<i class="cell l{lvl}" title="{d:%Y-%m-%d} {WEEKDAYS[d.weekday()]} · '
@@ -726,8 +795,14 @@ def render_calendar(p) -> str:
         '</div></div>'
         '<div class="cal-foot">'
         f'<span>全年 {total:,} 次访问，{sum(1 for n in counts.values() if n)} 天有记录</span>'
-        '<span class="cal-scale">少 <i class="cell l0"></i><i class="cell l1"></i>'
-        '<i class="cell l2"></i><i class="cell l3"></i><i class="cell l4"></i> 多</span>'
+        '<span class="cal-scale" title="按每天访问次数着色">'
+        '<span class="cal-scale-end">少</span>'
+        '<span class="cal-step"><i class="cell l0" title="无记录"></i>0</span>'
+        '<span class="cal-step"><i class="cell l1" title="1–49 次/天"></i>1–49</span>'
+        '<span class="cal-step"><i class="cell l2" title="50–149 次/天"></i>50–149</span>'
+        '<span class="cal-step"><i class="cell l3" title="150–399 次/天"></i>150–399</span>'
+        '<span class="cal-step"><i class="cell l4" title="400 次以上/天"></i>400+</span>'
+        '<span class="cal-scale-end">多</span></span>'
         '</div>'
     )
 
@@ -735,7 +810,23 @@ def render_calendar(p) -> str:
 def render_insights(p) -> str:
     t = p["totals"]
     bullets = []
-    if t["visits"]:
+    if p["key"] == "day":
+        if t["visits"]:
+            bullets.append(f'共打开 <b>{t["visits"]:,}</b> 个页面，涉及 <b>{t["domains"]}</b> 个站点，有效阅读 <b>{human_seconds(t["seconds"])}</b>。')
+            bullets.append(f'第一次访问在 <b>{p["first_visit"]:%H:%M}</b>，最后一次在 <b>{p["last_visit"]:%H:%M}</b>。')
+            peak = p["peak_hour"]
+            bullets.append(f'最活跃的是 <b>{peak:02d}:00–{peak:02d}:59</b>，{p["hours"][peak]} 次访问。')
+            if p["top_cat"] != "—":
+                bullets.append(f'内容以 <b>{escape(p["top_cat"])}</b> 为主。')
+            if p["longest_session"]:
+                s = p["longest_session"]
+                bullets.append(f'最长一次连续浏览从 <b>{s["start"]:%H:%M:%S}</b> 开始，有效阅读 <b>{human_seconds(s["sec"])}</b>，'
+                               f'看了 {s["uniq"]} 个不同页面。')
+            if p["longest_page"]:
+                v = p["longest_page"]
+                bullets.append(f'单页停留最久的是《<b>{escape(v["title"])}</b>》，{human_seconds(v["eff"])}。')
+            bullets.append(f'凌晨 0–6 点的访问占 <b>{p["night"] / t["visits"] * 100:.0f}%</b>。')
+    elif t["visits"]:
         bullets.append(f'共打开 <b>{t["visits"]:,}</b> 个页面，涉及 <b>{t["domains"]}</b> 个站点，有效阅读 <b>{human_seconds(t["seconds"])}</b>。')
         if p["top_cat"] != "—":
             bullets.append(f'内容以 <b>{escape(p["top_cat"])}</b> 为主。')
@@ -749,10 +840,10 @@ def render_insights(p) -> str:
         if p["longest_page"]:
             v = p["longest_page"]
             bullets.append(f'单页停留最久的是《<b>{escape(v["title"])}</b>》，{human_seconds(v["eff"])}。')
-        if t["visits"]:
-            bullets.append(f'凌晨 0–6 点的访问占 <b>{p["night"] / t["visits"] * 100:.0f}%</b>。')
+        bullets.append(f'凌晨 0–6 点的访问占 <b>{p["night"] / t["visits"] * 100:.0f}%</b>。')
     if p["bm_added"]:
-        bullets.append(f'本期新增书签 <b>{len(p["bm_added"])}</b> 个。')
+        bullets.append(f'当日新增书签 <b>{len(p["bm_added"])}</b> 个。' if p["key"] == "day"
+                       else f'本期新增书签 <b>{len(p["bm_added"])}</b> 个。')
     if not bullets:
         return ""
     return f'<ul class="insights">{"".join(f"<li>{b}</li>" for b in bullets)}</ul>'
@@ -788,10 +879,17 @@ def render_period(p) -> str:
 
     avg_day = t["seconds"] / t["days"] if t["days"] else 0
     last_day = p["end"] - dt.timedelta(days=1)
+    if p["key"] == "day":
+        eyebrow = f'日报 · {p["start"]:%Y-%m-%d} {WEEKDAYS[p["start"].weekday()]}'
+        lede = (f'有效阅读 {human_seconds(t["seconds"])}，涉及 {t["domains"]} 个站点，'
+                f'{len(p["sessions"])} 次连续浏览。')
+    else:
+        eyebrow = f'{escape(p["label"])} · {p["start"]:%Y-%m-%d} — {last_day:%Y-%m-%d}'
+        lede = f'有效阅读 {human_seconds(t["seconds"])}，日均 {human_seconds(avg_day)}，涉及 {t["domains"]} 个站点。'
     hero = (
-        f'<p class="eyebrow">{escape(p["label"])} · {p["start"]:%Y-%m-%d} — {last_day:%Y-%m-%d}</p>'
+        f'<p class="eyebrow">{eyebrow}</p>'
         f'<h1>{t["visits"]:,} 个页面</h1>'
-        f'<p class="lede">有效阅读 {human_seconds(t["seconds"])}，日均 {human_seconds(avg_day)}，涉及 {t["domains"]} 个站点。</p>'
+        f'<p class="lede">{lede}</p>'
         + render_kpis(p)
     )
     parts = [f'<section id="p-{p["key"]}" class="period">',
@@ -817,16 +915,26 @@ def render_period(p) -> str:
         parts.append(band("全年活跃日历", "每格一天。浅灰表示没有记录——Chrome 默认只保留约 90 天历史。",
                           render_calendar(p)))
 
-    parts.append(band("这一期", "", render_insights(p)))
+    parts.append(band("这一天" if p["key"] == "day" else "这一期", "", render_insights(p)))
 
-    parts.append(band(
-        "节奏",
-        "每天打开多少页面，一天里什么时候最活跃。",
-        '<div class="grid2">'
-        f'<div class="card"><h3>{"每月访问" if p["key"] == "year" else "每日访问"}</h3>'
-        + (render_month_bars(p) if p["key"] == "year" else render_day_bars(p)) +
-        '</div><div class="card"><h3>时段分布</h3>' + render_hours(p) + "</div></div>",
-    ))
+    if p["key"] == "day":
+        parts.append(band(
+            "节奏",
+            "每一条色块是一次页面停留，悬停可看标题与时长；下面是 24 小时的访问分布。",
+            '<div class="stack">'
+            '<div class="card"><h3>全天时间轴</h3>' + render_gantt(p) + '</div>'
+            '<div class="card"><h3>时段分布</h3>' + render_hours(p) + '</div>'
+            '</div>',
+        ))
+    else:
+        parts.append(band(
+            "节奏",
+            "每天打开多少页面，一天里什么时候最活跃。",
+            '<div class="grid2">'
+            f'<div class="card"><h3>{"每月访问" if p["key"] == "year" else "每日访问"}</h3>'
+            + (render_month_bars(p) if p["key"] == "year" else render_day_bars(p)) +
+            '</div><div class="card"><h3>时段分布</h3>' + render_hours(p) + "</div></div>",
+        ))
 
     parts.append(band(
         "去处",
@@ -838,34 +946,42 @@ def render_period(p) -> str:
     parts.append(band("读得最久", "按有效阅读时长排序的页面。",
                       '<div class="card">' + render_pages(p, 20) + "</div>"))
 
-    if p["key"] == "week":
-        parts.append(band("会话时间轴", "每行一天，色块是一次页面停留；间隔超过 20 分钟算新会话。",
-                          '<div class="card">' + render_gantt(p) + "</div>"))
+    if p["key"] in ("week", "day"):
+        if p["key"] == "week":
+            parts.append(band("会话时间轴", "每行一天，色块是一次页面停留；间隔超过 20 分钟算新会话。",
+                              '<div class="card">' + render_gantt(p) + "</div>"))
 
         sess = sorted(p["sessions"], key=lambda s: s["sec"], reverse=True)[:8]
         rows = []
         for s in sess:
             top = "、".join(domain_link(d) for d, _ in s["domains"].most_common(2))
-            end_label = (s["end"].strftime("%H:%M:%S") if s["end"].date() == s["start"].date()
+            end_label = (s["end"].strftime("%H:%M:%S") if p["key"] == "day" or s["end"].date() == s["start"].date()
                          else s["end"].strftime("%m-%d %H:%M:%S"))
+            start_label = (s["start"].strftime("%H:%M:%S") if p["key"] == "day"
+                           else s["start"].strftime("%m-%d %H:%M:%S"))
             rows.append(
-                f'<tr><td class="mono">{s["start"].strftime("%m-%d %H:%M:%S")}</td>'
+                f'<tr><td class="mono">{start_label}</td>'
                 f'<td class="mono">{end_label}</td>'
                 f'<td class="num">{human_short(s["sec"])}</td><td class="num">{s["uniq"]}</td>'
                 f'<td>{top}</td></tr>'
             )
         parts.append(band(
-            "最长的几次连续浏览",
-            "",
+            "最长的几次连续浏览" if p["key"] == "week" else "连续浏览",
+            "" if p["key"] == "week" else "间隔超过 20 分钟算新会话，按有效阅读排序。",
             '<div class="card"><table class="tbl"><thead><tr><th>开始</th><th>结束</th>'
             '<th class="num">有效阅读</th><th class="num">页面</th><th>主要站点</th></tr></thead><tbody>'
             + "".join(rows) + "</tbody></table></div>",
         ))
 
-    parts.append(band("逐日明细", "时间精确到秒，点击某一天展开。",
-                      '<div class="card">' + render_day_details(p) + "</div>"))
+    if p["key"] == "day":
+        parts.append(band("逐次明细", "按小时折叠，点击展开；所有标题都可直达原网页。",
+                          '<div class="card">' + render_visit_list(p) + "</div>"))
+    else:
+        parts.append(band("逐日明细", "时间精确到秒，点击某一天展开。",
+                          '<div class="card">' + render_day_details(p) + "</div>"))
 
-    parts.append(band("新增书签", "", '<div class="card">' + render_bookmarks(p) + "</div>"))
+    if p["bm_added"] or p["key"] != "day":
+        parts.append(band("新增书签", "", '<div class="card">' + render_bookmarks(p) + "</div>"))
     parts.append("</section>")
     return "".join(parts)
 
@@ -892,8 +1008,9 @@ def render_history(pages, hist) -> str:
       <div class="hist-cal-grid" id="hcal-grid"></div>
       <div class="hist-cal-foot">
         <span id="hcal-summary">—</span>
-        <span class="hist-scale" aria-hidden="true">少<i class="hcal-lv l1"></i><i class="hcal-lv l2"></i><i class="hcal-lv l3"></i><i class="hcal-lv l4"></i>多</span>
+        <span class="hist-scale" title="按每天访问次数着色：{HEAT_LEGEND}" aria-label="颜色越深访问越多：{HEAT_LEGEND}">少<i class="hcal-lv l1" title="1–49 次/天"></i><i class="hcal-lv l2" title="50–149 次/天"></i><i class="hcal-lv l3" title="150–399 次/天"></i><i class="hcal-lv l4" title="400 次以上/天"></i>多</span>
       </div>
+      <p class="hist-scale-note">{HEAT_LEGEND}</p>
     </div>
     <div class="hist-side-foot">
       <button id="hist-latest" type="button" class="hist-ghost">回到最近一天</button>
@@ -976,6 +1093,15 @@ APP_JS = r"""
   const pad = n => String(n).padStart(2, '0');
   const WD = ['周日', '周一', '周二', '周三', '周四', '周五', '周六'];
   const SETTINGS_KEY = 'browser-report.settings.v1';
+  const HEAT = window.HEAT_STEPS || [[1, 49], [50, 149], [150, 399], [400, null]];
+  function heatLevel(n) {
+    if (!n) return 0;
+    for (let i = 0; i < HEAT.length; i++) {
+      const hi = HEAT[i][1];
+      if (hi === null || n <= hi) return i + 1;
+    }
+    return HEAT.length;
+  }
 
   const btns = $$('.seg button');
   const secs = $$('.period');
@@ -1149,20 +1275,20 @@ APP_JS = r"""
     const y = S.month.getFullYear(), m = S.month.getMonth();
     const firstWeekday = (new Date(y, m, 1).getDay() + 6) % 7;
     const daysIn = new Date(y, m + 1, 0).getDate();
-    let max = 0, monthCount = 0, monthDays = 0;
+    let monthCount = 0, monthDays = 0;
     const counts = [];
     for (let d = 1; d <= daysIn; d++) {
       const st = DAYS.get(y + '-' + pad(m + 1) + '-' + pad(d));
       const c = st ? st.count : 0;
       counts.push(c);
-      if (st) { max = Math.max(max, c); monthCount += c; monthDays++; }
+      if (st) { monthCount += c; monthDays++; }
     }
     let cells = '';
     for (let i = 0; i < firstWeekday; i++) cells += '<i class="hcal-blank"></i>';
     for (let d = 1; d <= daysIn; d++) {
       const k = y + '-' + pad(m + 1) + '-' + pad(d);
       const st = DAYS.get(k);
-      const lvl = st && max ? Math.min(4, Math.max(1, Math.round(Math.sqrt(counts[d - 1] / max) * 4))) : 0;
+      const lvl = st ? heatLevel(counts[d - 1]) : 0;
       let cls = 'hcal-day';
       if (k < firstKey || k > lastKey) cls += ' out';
       else if (!st) cls += ' none';
@@ -1432,7 +1558,7 @@ APP_JS = r"""
 
 
 def build_html(periods, generated_at, source_note, pages, hist) -> str:
-    tab_labels = {"week": "周报", "month": "月报", "year": "年报"}
+    tab_labels = {"day": "日报", "week": "周报", "month": "月报", "year": "年报"}
     tabs = '<button data-t="history" class="active">历史</button>' + "".join(
         f'<button data-t="{p["key"]}">{tab_labels.get(p["key"], escape(p["label"]))}</button>'
         for p in periods
@@ -1443,6 +1569,7 @@ def build_html(periods, generated_at, source_note, pages, hist) -> str:
     pages_json = js_json(pages)
     hist_json = js_json(hist)
     colors_json = js_json(CAT_COLOR)
+    heat_json = js_json([[lo, hi] for lo, hi in HEAT_STEPS])
     return f"""<!doctype html>
 <html lang="zh-CN"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
@@ -1456,7 +1583,7 @@ def build_html(periods, generated_at, source_note, pages, hist) -> str:
 </div></header>
 {bodies}
 <footer>{escape(source_note)}<br>历史索引 {len(hist):,} 次可跳转访问 / {len(pages):,} 个页面 · 有效阅读 = min(记录时长, 到下一次访问的间隔, {MAX_VISIT_SECONDS // 60} 分钟)；会话间隔阈值 {SESSION_GAP_SECONDS // 60} 分钟。</footer>
-<script>window.PAGES={pages_json};window.HIST={hist_json};window.CAT_COLORS={colors_json};</script>
+<script>window.PAGES={pages_json};window.HIST={hist_json};window.CAT_COLORS={colors_json};window.HEAT_STEPS={heat_json};</script>
 <script>{APP_JS}</script>
 </body></html>"""
 
@@ -1490,6 +1617,9 @@ def main():
     anchor = dt.datetime.strptime(args.anchor, "%Y-%m-%d").replace(tzinfo=LOCAL_TZ) if args.anchor else now
     day0 = anchor.replace(hour=0, minute=0, second=0, microsecond=0)
 
+    # 日报
+    day = build_period("day", f"{day0.month} 月 {day0.day} 日", day0, day0 + dt.timedelta(days=1),
+                       visits, bookmarks, day0 - dt.timedelta(days=1), day0, now)
     # 本周
     monday = day0 - dt.timedelta(days=day0.weekday())
     week = build_period("week", "本周", monday, monday + dt.timedelta(days=7),
@@ -1507,7 +1637,7 @@ def main():
     annual = build_period("year", f"{year} 年度", y_start, y_end,
                           visits, bookmarks, y_start - (y_end - y_start), y_start, now)
 
-    periods = [week, month, annual]
+    periods = [day, week, month, annual]
     stage("聚合完成")
     pages, hist = build_history_data(visits)
     stage(f"历史索引 {len(hist):,} 次访问 / {len(pages):,} 个页面")
@@ -1523,6 +1653,7 @@ def main():
     stage("写入完成")
     size = os.path.getsize(args.out) / 1024 / 1024
     print(f"OK  {args.out}  ({size:.2f} MB)")
+    print(f"日报 {day['totals']['visits']:,} 次 · {human_seconds(day['totals']['seconds'])}")
     print(f"本周 {week['totals']['visits']:,} 次 · {human_seconds(week['totals']['seconds'])}")
     print(f"{month['label']} {month['totals']['visits']:,} 次 · {human_seconds(month['totals']['seconds'])}")
     print(f"{year} 年度 {annual['totals']['visits']:,} 次 · {human_seconds(annual['totals']['seconds'])}")

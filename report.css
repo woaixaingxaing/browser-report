@@ -160,6 +160,10 @@ h2.band-title{
 .hcal-lv.l2{background:color-mix(in srgb,var(--accent) 22%,transparent)}
 .hcal-lv.l3{background:color-mix(in srgb,var(--accent) 34%,transparent)}
 .hcal-lv.l4{background:color-mix(in srgb,var(--accent) 48%,transparent)}
+.hist-scale-note{
+  margin:5px 2px 1px;color:var(--muted);font-size:10px;line-height:1.55;
+  font-variant-numeric:tabular-nums;letter-spacing:.01em;
+}
 .hist-side-foot{padding:0 4px}
 .hist-ghost{
   border:1px solid var(--line);background:transparent;color:var(--muted);font:inherit;font-size:11.5px;
@@ -367,6 +371,7 @@ mark{background:color-mix(in srgb,var(--accent) 20%,transparent);color:inherit;b
 .card h3{margin:0 0 16px;font-size:1.02rem;font-weight:600;letter-spacing:-.01em}
 .grid2{display:grid;grid-template-columns:1fr 1fr;gap:14px}
 .grid2>*{min-width:0}
+.stack{display:grid;gap:14px}
 .hint{color:var(--muted);font-size:.82rem;margin:-8px 0 14px}
 
 /* 表格 */
@@ -482,10 +487,15 @@ a.gb:hover{opacity:1;outline:2px solid color-mix(in srgb,var(--text) 35%,transpa
 .cell.l4{background:var(--accent)}
 .cell.out{background:transparent}
 .cal-foot{
-  display:flex;justify-content:space-between;align-items:center;gap:16px;
+  display:flex;justify-content:space-between;align-items:center;gap:16px;flex-wrap:wrap;
   margin-top:14px;font-size:12px;color:var(--muted);
 }
-.cal-scale{display:flex;align-items:center;gap:3px}
+.cal-scale{
+  display:flex;align-items:center;gap:9px;flex-wrap:wrap;justify-content:flex-end;
+  font-size:11px;font-variant-numeric:tabular-nums;
+}
+.cal-scale-end{color:var(--muted)}
+.cal-step{display:inline-flex;align-items:center;gap:5px;white-space:nowrap}
 
 .empty{color:var(--muted);text-align:center;padding:24px 0}
 .empty.big{padding:56px 0;font-size:1rem}
@@ -514,6 +524,8 @@ footer{
   .card{overflow-x:auto}
   .tbl{font-size:13px}
   .page-cell{max-width:34ch}
+  .cal-scale{width:100%;justify-content:flex-start;gap:8px}
+  .cal-foot{align-items:flex-start}
 }
 @media (max-width:860px){
   .hist{grid-template-columns:1fr;gap:0;padding:18px 20px 64px}
